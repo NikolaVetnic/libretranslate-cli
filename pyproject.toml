@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lt-cli"
+version = "0.1.0"
+description = "Command-line translator backed by a local LibreTranslate Docker container"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+lt = "lt_cli.cli:main"
+ltn = "lt_cli.cli:main_nb_en"
+lte = "lt_cli.cli:main_en_nb"
+
+[tool.setuptools.packages.find]
+where = ["src"]

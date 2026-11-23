@@ -1,0 +1,25 @@
+services:
+  libretranslate:
+    image: libretranslate/libretranslate:${LT_IMAGE_TAG:-latest}
+    container_name: libretranslate
+    restart: unless-stopped
+    ports:
+      - "${LT_PORT:-5000}:5000"
+    environment:
+      # Only download/load these language models (keeps first start fast and RAM low).
+      # Remove or empty this to load every available language (~several GB).
+      LT_LOAD_ONLY: ${LT_LOAD_ONLY:-en,nl,de,fr,es,it}
+      LT_UPDATE_MODELS: ${LT_UPDATE_MODELS:-false}
+      LT_DISABLE_WEB_UI: ${LT_DISABLE_WEB_UI:-false}
+    volumes:
+      # Persist downloaded models so restarts don't re-download them.
+      - lt-models:/home/libretranslate/.local
+    healthcheck:
+      test: ["CMD-SHELL", "./venv/bin/python scripts/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+
+volumes:
+  lt-models:
