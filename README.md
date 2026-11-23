@@ -11,11 +11,24 @@ The CLI is pure Python standard library (no dependencies).
 python -m venv .venv
 .venv\Scripts\pip install -e .
 
-# 2. Start the LibreTranslate container and wait until models are loaded
+# 2. (Optional) Start the container now: pulls the image and downloads models
 .venv\Scripts\lt up
 ```
 
-The first `lt up` pulls the image and downloads language models, which takes a few minutes. Models are stored in the `lt-models` Docker volume, so later starts are fast.
+The first start pulls the image (~1 GB) and downloads language models, which takes a few minutes. Models are stored in the `lt-models` Docker volume, so later starts take a few seconds.
+
+## On-demand server
+
+The container only runs while you're using it:
+
+1. **Starts on demand.** When a command needs the server and it's off, `lt` starts the container. This takes about 4 seconds once models are downloaded. Later calls take about 0.5 seconds.
+2. **Stops when idle.** Each use records a timestamp. A small background watcher process (`pythonw`, no window) stops the container after `LT_IDLE_TIMEOUT` minutes (default 15) without use, then exits. A file lock ensures only one watcher runs.
+3. **Uses little memory.** The server runs a single worker (`LT_THREADS=1`) and uses about 250 MB of RAM with English and Norwegian loaded. LibreTranslate's default of 4 workers used about 1.5 GB.
+4. **Never starts on its own.** The container has `restart: "no"`, so it doesn't come up when Docker starts.
+
+`lt status` shows whether the server is up and how long until it auto-stops. Only CLI usage counts as activity. If you use the web UI at http://localhost:5000, it may be stopped while you're still on the page.
+
+Docker Desktop's *Resource Saver* mode (enabled by default) shuts down Docker's own Linux VM a few minutes after the last container stops. In practice, nothing keeps running between translations.
 
 ## Usage
 
@@ -29,9 +42,10 @@ lt "Hello" -t it -a 3              # show up to 3 alternative translations
 lt "Bonjour" -t en -v              # show the detected source language
 lt detect "Goedemorgen"            # detect the language
 lt languages                       # list loaded languages and their targets
-lt status                          # is the server up?
+lt status                          # is the server up? when will it auto-stop?
+lt up                              # start now (otherwise starts on first use)
+lt down                            # stop now
 lt logs -f                         # follow container logs
-lt down                            # stop the container
 ```
 
 Running `lt ...` without a subcommand is the same as `lt translate ...`. Add `--json` to any command to get the raw API response.
@@ -60,16 +74,19 @@ All `translate` options still work, e.g. `ltn --json ...` or `ltn -a 2 ...`.
 
 | Env var                         | Default                  | Purpose                                              |
 | ------------------------------- | ------------------------ | ---------------------------------------------------- |
-| `LT_URL`                        | `http://localhost:5000`  | Server the CLI talks to                              |
+| `LT_URL`                        | `http://localhost:$LT_PORT` | Server the CLI talks to                           |
+| `LT_AUTOSTART`                  | `1`                      | Start the local container when a command needs it    |
+| `LT_IDLE_TIMEOUT`               | `15`                     | Minutes without use before auto-stop (`0` = never)   |
 | `LT_TARGET`                     | `en`                     | Default target language                              |
 | `LT_SOURCE`                     | `auto`                   | Default source language                              |
 | `LT_API_KEY`                    | –                        | API key, if the server requires one                  |
 | `LT_COMPOSE_FILE`               | `./docker-compose.yml`   | Compose file used by `lt up/down/logs`               |
 
-Server settings go in a `.env` file next to `docker-compose.yml` (see [.env.example](.env.example)):
+All settings can also go in a `.env` file next to `docker-compose.yml` (see [.env.example](.env.example)). Docker Compose reads it for the server, and `lt` reads it for its own defaults. Real environment variables take precedence. Server settings:
 
 - `LT_LOAD_ONLY` — comma-separated languages to load (default `en,nl,de,fr,es,it`; Norwegian is `nb`). Leave it empty to load every language. That download is several GB. LibreTranslate downloads models only when the model volume is empty. After changing this setting, run `lt down -v`, then `lt up`, to delete the cached models and download the new set.
-- `LT_PORT` — host port (default `5000`). If you change it, also set `LT_URL`.
+- `LT_PORT` — host port (default `5000`).
+- `LT_THREADS` — worker processes (default `1`). Each one holds its own copy of the models, so raise this only if many requests arrive at the same time.
 - `LT_IMAGE_TAG` — pin a specific image version instead of `latest`.
 
 The LibreTranslate web UI is also available at http://localhost:5000.
