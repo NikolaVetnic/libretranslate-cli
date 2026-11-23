@@ -64,6 +64,22 @@ class LibreTranslate:
             payload["alternatives"] = alternatives
         return self._request("POST", "/translate", payload)
 
+    def translate_many(self, texts: list[str], target: str, source: str = "auto") -> list[str]:
+        """Translate several strings in one request (order preserved)."""
+        return [c[0] for c in self.translate_many_alts(texts, target, source)]
+
+    def translate_many_alts(self, texts: list[str], target: str, source: str = "auto",
+                            alternatives: int = 0) -> list[list[str]]:
+        """Like translate_many, but each result is [best, *alternatives]."""
+        payload: dict[str, Any] = {"q": list(texts), "source": source, "target": target, "format": "text"}
+        if alternatives:
+            payload["alternatives"] = alternatives
+        res = self._request("POST", "/translate", payload)
+        main = res.get("translatedText", [])
+        main = main if isinstance(main, list) else [main]
+        alts = res.get("alternatives") or [[] for _ in main]
+        return [[m, *(a or [])] for m, a in zip(main, alts)]
+
     def is_ready(self) -> bool:
         try:
             return bool(self.languages())

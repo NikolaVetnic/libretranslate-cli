@@ -13,6 +13,7 @@ dependencies = []
 lt = "lt_cli.cli:main"
 ltn = "lt_cli.cli:main_nb_en"
 lte = "lt_cli.cli:main_en_nb"
+ltw = "lt_cli.cli:main_word"
 
 [tool.setuptools.packages.find]
 where = ["src"]
