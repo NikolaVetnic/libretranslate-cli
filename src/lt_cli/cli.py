@@ -6,14 +6,16 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
-from . import __version__, ordbok, server
+from . import __version__, checker, ordbok, server
 from .client import LibreTranslate, LTError, LTUnreachable
 from .server import DockerError
 from .style import Style, is_terminal, make_style
-SUBCOMMANDS = {"translate", "t", "word", "w", "detect", "languages", "langs", "up", "down", "status", "logs"}
+SUBCOMMANDS = {"translate", "t", "word", "w", "check", "c", "detect", "languages", "langs", "up", "down", "status", "logs"}
 
 EXIT_ERROR = 1
 EXIT_UNREACHABLE = 3
@@ -445,6 +447,123 @@ def cmd_word(args: argparse.Namespace) -> int:
             print()
 
 
+# --------------------------------------------------------------------------- check (grammar)
+
+class _Spinner:
+    """Tiny stderr spinner shown while waiting, only when stderr is a terminal."""
+
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, message: str, enabled: bool):
+        self.message, self.enabled = message, enabled
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        i = 0
+        while not self._stop.wait(0.1):
+            sys.stderr.write(f"\r{self.FRAMES[i % len(self.FRAMES)]} {self.message}")
+            sys.stderr.flush()
+            i += 1
+
+    def __enter__(self):
+        if self.enabled:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self.enabled:
+            self._stop.set()
+            self._thread.join()
+            sys.stderr.write("\r" + " " * (len(self.message) + 2) + "\r")
+            sys.stderr.flush()
+
+
+def _highlight(S: Style, text: str, fragments: list[str], *styles: str) -> str:
+    """Style each fragment's first occurrence in text (left to right, no overlaps)."""
+    if not S.color:
+        return text
+    out, pos = [], 0
+    for frag in fragments:
+        i = text.find(frag, pos) if frag else -1
+        if i < 0:
+            continue
+        out += [text[pos:i], S(frag, *styles)]
+        pos = i + len(frag)
+    return "".join(out) + text[pos:]
+
+
+def _check_lines(S: Style, r: checker.CheckResult, args: argparse.Namespace) -> list[str]:
+    if args.only_corrected:
+        return [r.corrected]
+    lines = []
+    if r.is_correct or not r.corrections:
+        lines.append(S.icon("✅", "") + S("No mistakes found.", "bold", "bgreen"))
+        lines.append(f"   {S(r.corrected, 'bold')}")
+    else:
+        lines.append(S.icon("✏️", "") + S("Corrected:", "bold"))
+        lines.append("   " + _highlight(S, r.corrected, [c.correction for c in r.corrections], "bold", "bgreen"))
+    if r.translation:
+        lines.append(f"   {S('→ ' + r.translation, 'gray', 'italic')}")
+    if r.corrections:
+        n = len(r.corrections)
+        lines += ["", S.icon("🔍") + S(f"{n} correction{'s' if n > 1 else ''}", "bold")]
+        for i, c in enumerate(r.corrections, 1):
+            label = f"{i}."
+            change = f"{S(c.original, 'red', 'strike')} {S('→', 'dim')} {S(c.correction, 'bold', 'bgreen')}"
+            cat = f"  {S('[' + c.category + ']', 'dim')}" if c.category else ""
+            lines.append(f"  {S(label, 'bold', 'bcyan')} {change}{cat}")
+            if c.explanation:
+                lines.append(f"  {' ' * len(label)} {c.explanation}")
+    if args.verbose:
+        lines += ["", S(f"({r.model}, {r.duration_s:.1f}s)", "dim")]
+    return lines
+
+
+def _check_one(args: argparse.Namespace, text: str) -> None:
+    model = args.model or os.environ.get("LT_CHECK_MODEL") or checker.DEFAULT_MODEL
+    spin = _Spinner(f"Checking with Claude ({model})…",
+                    is_terminal(sys.stderr) and not args.json and args.style.color)
+    with spin:
+        r = checker.check(text, args.dict, model, workdir=server.state_dir())
+    if args.json:
+        print(json.dumps(asdict(r), ensure_ascii=False, indent=2))
+    else:
+        print("\n".join(_check_lines(args.style, r, args)))
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    inputs = _read_inputs(args)
+    if inputs is None:  # interactive
+        print(f"Grammar check ({checker.LANGUAGE[args.dict]}). Ctrl+D / Ctrl+Z+Enter or :q to quit.",
+              file=sys.stderr)
+        while True:
+            try:
+                line = input(args.style("sjekk> ", "bold", "bcyan")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print(file=sys.stderr)
+                return 0
+            if line in {":q", ":quit", ":exit"}:
+                return 0
+            if line:
+                try:
+                    _check_one(args, line)
+                except checker.CheckError as e:
+                    _err(str(e))
+                print()
+    many = len(inputs) > 1
+    for i, (label, text) in enumerate(inputs):
+        if many:
+            print(f"{'' if i == 0 else chr(10)}{args.style('==> ' + str(label) + ' <==', 'bold')}")
+        if not text:
+            _err(f"no text to check{f' in {label}' if label else ''}")
+            if not many:
+                return EXIT_ERROR
+            continue
+        _check_one(args, text)
+    return 0
+
+
 def cmd_up(args: argparse.Namespace) -> int:
     if args.no_wait:
         return server.compose("up", "-d").returncode
@@ -517,6 +636,7 @@ def build_parser() -> argparse.ArgumentParser:
             '  lt detect "Good morning"      detect language\n'
             "  lt languages                  list installed languages\n"
             "  lt word skrev                 dictionary: forms + meanings (same as: ltw skrev)\n"
+            '  lt check "Jeg liker å spiser" grammar check with explanations (same as: ltc ...)\n'
             "  lt status                     is the server up, and when will it auto-stop?\n"
             "\nA bare `lt ...` without a subcommand means `lt translate ...`.\n"
             "The container starts automatically when needed and stops after LT_IDLE_TIMEOUT\n"
@@ -565,6 +685,22 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("-n", "--no-translate", action="store_true", help="skip English translations")
     w.set_defaults(func=cmd_word)
 
+    c = sub.add_parser(
+        "check", aliases=["c"], parents=[common],
+        help="check Norwegian text for mistakes and explain corrections (uses Claude Code)",
+        description="Check Norwegian text for spelling, grammar and word-order mistakes. "
+                    "Runs your installed Claude Code CLI non-interactively (no tools, no MCP), "
+                    "so it uses your Claude subscription; the text is sent to Anthropic.",
+    )
+    c.add_argument("text", nargs="*", help="text or file(s) to check (omit to read stdin / go interactive)")
+    c.add_argument("-F", "--file", help="read text from a UTF-8 file")
+    c.add_argument("--nn", dest="dict", action="store_const", const="nn", default="bm",
+                   help="check Nynorsk instead of Bokmål")
+    c.add_argument("-m", "--model", help=f"Claude model (env LT_CHECK_MODEL, default {checker.DEFAULT_MODEL})")
+    c.add_argument("-o", "--only-corrected", action="store_true", help="print only the corrected text")
+    c.add_argument("-v", "--verbose", action="store_true", help="show model and time taken")
+    c.set_defaults(func=cmd_check)
+
     u = sub.add_parser("up", parents=[common], help="start the LibreTranslate container")
     u.add_argument("--no-wait", action="store_true", help="don't wait for the server to become ready")
     u.add_argument("--wait-timeout", type=float, default=900, help="seconds to wait (default 900)")
@@ -592,6 +728,11 @@ def _preset(source: str, target: str):
 
 main_nb_en = _preset("nb", "en")  # `ltn`: Norwegian -> English
 main_en_nb = _preset("en", "nb")  # `lte`: English -> Norwegian
+
+
+def main_check() -> int:
+    """`ltc`: Norwegian grammar check."""
+    return main(["check", *sys.argv[1:]])
 
 
 def main_word() -> int:
@@ -627,7 +768,7 @@ def main(argv: list[str] | None = None) -> int:
     except LTError as e:
         _err(str(e))
         return EXIT_ERROR
-    except ordbok.OrdbokError as e:
+    except (ordbok.OrdbokError, checker.CheckError) as e:
         _err(str(e))
         return EXIT_UNREACHABLE
     except (FileNotFoundError, UnicodeDecodeError) as e:

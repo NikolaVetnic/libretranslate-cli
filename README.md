@@ -1,6 +1,6 @@
 # lt — LibreTranslate CLI
 
-A small command-line translator backed by a self-hosted [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) server running in Docker. Translation runs locally, so your text never leaves your machine. The optional Norwegian dictionary lookup (`ltw`) is the one exception: it queries [ordbokene.no](https://ordbokene.no). See below.
+A small command-line translator backed by a self-hosted [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) server running in Docker. Translation runs locally, so your text never leaves your machine. Two optional extras use online services: the Norwegian dictionary lookup (`ltw`) queries [ordbokene.no](https://ordbokene.no), and the grammar check (`ltc`) uses Claude through your Claude Code login. See below.
 
 The CLI is pure Python standard library (no dependencies).
 
@@ -41,7 +41,7 @@ pipx install -e ~/path/to/libretranslate-cli
 
 Requirements: Python 3.9+ and Docker (Docker Desktop, OrbStack or Colima on macOS). The image runs natively on both Intel and Apple Silicon. After installing, `ltn God morgen` works from any folder.
 
-To update after a `git pull`, nothing is needed. If `pyproject.toml` changed (for example, new commands such as `ltw`), run `pipx reinstall lt-cli`. To remove the tool, run `pipx uninstall lt-cli`.
+To update after a `git pull`, nothing is needed. If `pyproject.toml` changed (for example, new commands such as `ltw` or `ltc`), run `pipx reinstall lt-cli`. To remove the tool, run `pipx uninstall lt-cli`.
 
 > **Git Bash note:** `lt` recognises Git Bash's terminal (mintty), so colors and interactive mode should work directly. If interactive mode doesn't respond, run it through `winpty`, e.g. `winpty ltn`.
 
@@ -147,6 +147,42 @@ Set `LT_PRETTY=0` in `.env` (or pass `--color never`) for plain text, or `LT_EMO
 
 **English glosses** (the `≈ …` after the headword) are machine translations. `ltw` translates each gloss back to Norwegian, and hides it if the result isn't the original word. This filters out wrong guesses for rarer words. Translated definitions and examples are meant as a reading aid. The Norwegian text is the authoritative version.
 
+### Norwegian grammar check: `ltc`
+
+`ltc TEXT` (or `lt check TEXT`) checks Norwegian you've written. It returns the corrected text, an English translation, and an explanation of each correction in English:
+
+```text
+$ ltc "Jeg har skrivet et brev til min venn igår."
+✏️ Corrected:
+   Jeg har skrevet et brev til vennen min i går.
+   → I wrote a letter to my friend yesterday.
+
+🔍 3 corrections
+  1. skrivet → skrevet  [spelling]
+     The past participle of «skrive» is «skrevet», not «skrivet».
+  2. min venn → vennen min  [word order]
+     In Norwegian, the possessive normally comes after a definite noun: «vennen min». …
+  3. igår → i går  [spelling]
+     «I går» is written as two words.
+```
+
+```text
+ltc "Jeg liker å spiser fisk."      # check a sentence
+ltc brev.txt                        # check a file (or several)
+Get-Content brev.txt | ltc           # piped text
+ltc -o "..." > rettet.txt            # only the corrected text
+ltc --nn "..."                      # Nynorsk
+ltc -m opus "..."                   # a different model (default: sonnet)
+ltc                                 # interactive: type sentences at the sjekk> prompt
+```
+
+**How it works:** `ltc` runs your installed [Claude Code](https://claude.com/claude-code) CLI in non-interactive mode (`claude -p`). It disables all tools and MCP servers and saves no session, so Claude can only read the text and reply. It uses the same login as Claude Code, so a Claude Pro or Max subscription works and no API key is needed. Checks count toward your normal Claude usage limits.
+
+- **Requirements:** Claude Code installed and signed in (run `claude` once). `LT_CLAUDE_BIN` can point to it if it isn't on your PATH.
+- **Speed:** a check takes roughly 3–10 seconds.
+- **Privacy:** the checked text is sent to Anthropic, the same as anything you type into Claude Code.
+- **Reliability:** it catches the large majority of learner mistakes, such as verb forms, gender and agreement, V2 word order, and words written together or apart. It can occasionally miss something or suggest a style change rather than a strict error. Use it as a very good tutor, not an official authority. `ltw` shows the dictionary's official forms.
+
 ## Configuration
 
 | Env var                         | Default                  | Purpose                                              |
@@ -155,6 +191,9 @@ Set `LT_PRETTY=0` in `.env` (or pass `--color never`) for plain text, or `LT_EMO
 | `LT_AUTOSTART`                  | `1`                      | Start the local container when a command needs it    |
 | `LT_IDLE_TIMEOUT`               | `15`                     | Minutes without use before auto-stop (`0` = never)   |
 | `LT_PRETTY`                     | `1`                      | Colors + emoji in the terminal (`0` = plain text)    |
+| `LT_CHECK_MODEL`                | `sonnet`                 | Claude model for `ltc` (`haiku`, `sonnet`, `opus`)   |
+| `LT_CHECK_EFFORT`               | –                        | Effort for `ltc` (`low` … `max`; empty = default)    |
+| `LT_CLAUDE_BIN`                 | `claude` on PATH         | Path to the Claude Code CLI used by `ltc`            |
 | `LT_EMOJI`                      | `1`                      | Emoji in pretty output (`0` = colors only)           |
 | `LT_TARGET`                     | `en`                     | Default target language                              |
 | `LT_SOURCE`                     | `auto`                   | Default source language                              |

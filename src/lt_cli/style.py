@@ -20,7 +20,7 @@ import sys
 IS_WIN = os.name == "nt"
 
 CODES = {
-    "bold": "1", "dim": "2", "italic": "3", "underline": "4",
+    "bold": "1", "dim": "2", "italic": "3", "underline": "4", "strike": "9",
     "red": "31", "green": "32", "yellow": "33", "blue": "34", "magenta": "35", "cyan": "36",
     "gray": "90", "bred": "91", "bgreen": "92", "byellow": "93", "bblue": "94",
     "bmagenta": "95", "bcyan": "96",
