@@ -12,6 +12,7 @@ from pathlib import Path
 from . import __version__, ordbok, server
 from .client import LibreTranslate, LTError, LTUnreachable
 from .server import DockerError
+from .style import Style, is_terminal, make_style
 SUBCOMMANDS = {"translate", "t", "word", "w", "detect", "languages", "langs", "up", "down", "status", "logs"}
 
 EXIT_ERROR = 1
@@ -61,7 +62,7 @@ def _read_inputs(args: argparse.Namespace) -> list[tuple[str | None, str]] | Non
         if all(Path(a).is_file() for a in args.text):
             return [(a, _read_file(a)) for a in args.text]
         return [(None, " ".join(args.text).strip())]
-    if not sys.stdin.isatty():
+    if not is_terminal(sys.stdin):
         return [(None, sys.stdin.read().strip())]
     return None
 
@@ -192,20 +193,53 @@ def _translate_batch(args: argparse.Namespace, texts: list[str], source: str, ta
     return dict(zip(texts, out))
 
 
-def _sense_lines(s: ordbok.Sense, label: str, indent: str, tr: dict, n_examples: int) -> list[str]:
+GENDER_COLORS = {"Masc": "bblue", "Fem": "bmagenta", "Neuter": "bgreen"}
+POS_STYLE = {  # icon, color
+    "VERB": ("🏃", "bgreen"), "NOUN": ("📦", "bblue"), "ADJ": ("🎨", "byellow"),
+    "ADV": ("💨", "bcyan"), "PRON": ("👤", "bcyan"),
+}
+WEAK_PAST_ENDINGS = ("et", "a", "te", "de", "dde")
+
+
+def _is_irregular(e: ordbok.Entry) -> bool:
+    """Heuristic: a verb is irregular if no past form is stem + a weak ending."""
+    if e.pos != "VERB" or not e.forms.get("past"):
+        return False
+    inf = (e.forms.get("inf") or e.lemmas)[0]
+    stem = inf[:-1] if inf.endswith("e") and len(inf) > 2 else inf
+    stems = {stem} | ({stem[:-1]} if len(stem) > 2 and stem[-1] == stem[-2] else set())
+    return not any(p.startswith(st) and p[len(st):] in WEAK_PAST_ENDINGS
+                   for p in e.forms["past"] for st in stems)
+
+
+def _alts(S: Style, forms: list[str], *styles: str) -> tuple[str, str]:
+    """(plain, styled) rendering of alternative forms joined by ' / '."""
+    plain = " / ".join(forms)
+    return plain, S(" / ", "dim").join(S(f, *styles) for f in forms)
+
+
+def _cell(plain: str, styled: str, width: int) -> str:
+    return styled + " " * max(width - len(plain), 0)
+
+
+def _sense_lines(S: Style, s: ordbok.Sense, label: str, indent: str, tr: dict, n_examples: int) -> list[str]:
     lines = []
     pad = " " * len(label)
+    styled_label = S(label, "bold", "bcyan")
     if s.explanations:
-        lines.append(f"{indent}{label} {'; '.join(s.explanations)}")
+        lines.append(f"{indent}{styled_label} {'; '.join(s.explanations)}")
         english = [tr[x] for x in s.explanations if tr.get(x)]
         if english:
-            lines.append(f"{indent}{pad} → {'; '.join(english)}")
+            lines.append(f"{indent}{pad} {S('→ ' + '; '.join(english), 'green', 'italic')}")
     else:
-        lines.append(f"{indent}{label}")
+        lines.append(f"{indent}{styled_label}")
     for ex in s.examples[:n_examples]:
-        lines.append(f"{indent}{pad}   «{ex}»" + (f"  → {tr[ex]}" if tr.get(ex) else ""))
+        line = f"{indent}{pad}   {S.icon('💬')}{S('«' + ex + '»', 'yellow')}"
+        if tr.get(ex):
+            line += "  " + S("→ " + tr[ex], "gray", "italic")
+        lines.append(line)
     for j, sub in enumerate(s.subsenses):
-        lines += _sense_lines(sub, f"{chr(ord('a') + j % 26)})", indent + pad, tr, n_examples)
+        lines += _sense_lines(S, sub, f"{chr(ord('a') + j % 26)})", indent + pad, tr, n_examples)
     return lines
 
 
@@ -216,54 +250,87 @@ def _collect_texts(senses: list[ordbok.Sense], n_examples: int) -> list[str]:
     return out
 
 
-def _forms_lines(e: ordbok.Entry, dictionary: str) -> list[str]:
-    f = {k: " / ".join(v) for k, v in e.forms.items()}
-    rows: list[tuple[str, str]] = []
+def _forms_lines(S: Style, e: ordbok.Entry, dictionary: str) -> list[str]:
+    f = e.forms
     if e.pos == "NOUN":
-        articles = "/".join(ARTICLES[dictionary][g] for g in e.genders)
-        sg_indef = f"{articles} {f['sg_indef']}".strip() if "sg_indef" in f else ""
-        width = max(len(sg_indef), len(f.get("pl_indef", "")), len("ubestemt")) + 3
-        lines = [f"  {'':<10}{'ubestemt':<{width}}bestemt"]
-        lines.append(f"  {'entall':<10}{sg_indef:<{width}}{f.get('sg_def', '')}")
-        lines.append(f"  {'flertall':<10}{f.get('pl_indef', ''):<{width}}{f.get('pl_def', '')}")
-        return lines
+        art_plain = "/".join(ARTICLES[dictionary][g] for g in e.genders)
+        art_styled = S("/", "dim").join(S(ARTICLES[dictionary][g], GENDER_COLORS[g], "bold") for g in e.genders)
+        cells = {k: _alts(S, f.get(k, []), "bold") for k in ("sg_indef", "sg_def", "pl_indef", "pl_def")}
+        if art_plain and f.get("sg_indef"):
+            cells["sg_indef"] = (f"{art_plain} {cells['sg_indef'][0]}", f"{art_styled} {cells['sg_indef'][1]}")
+        width = max(len(cells["sg_indef"][0]), len(cells["pl_indef"][0]), len("ubestemt")) + 3
+        return [
+            f"  {' ' * 10}{_cell('ubestemt', S('ubestemt', 'dim', 'underline'), width)}{S('bestemt', 'dim', 'underline')}",
+            f"  {_cell('entall', S('entall', 'dim'), 10)}{_cell(*cells['sg_indef'], width)}{cells['sg_def'][1]}",
+            f"  {_cell('flertall', S('flertall', 'dim'), 10)}{_cell(*cells['pl_indef'], width)}{cells['pl_def'][1]}",
+        ]
+
+    rows: list[tuple[str, str]] = []  # (label, styled value)
     if e.pos == "VERB":
+        hi = ("bold", "byellow") if _is_irregular(e) else ("bold",)
+
+        def form(slot, prefix="", styles=("bold",)):
+            if not f.get(slot):
+                return ""
+            styled = _alts(S, f[slot], *styles)[1]
+            return f"{S(prefix, 'dim')} {styled}" if prefix else styled
+
         rows = [
-            ("infinitiv", f"å {f['inf']}" if "inf" in f else ""),
-            ("presens", f.get("pres", "")),
-            ("preteritum", f.get("past", "")),
-            ("perfektum", f"har {f['perf_part']}" if "perf_part" in f else ""),
-            ("imperativ", f.get("imp", "")),
-            ("passiv", f.get("pass", "")),
-            ("pres. partisipp", f.get("pres_part", "")),
+            ("infinitiv", form("inf", "å")),
+            ("presens", form("pres")),
+            ("preteritum", form("past", styles=hi)),
+            ("perfektum", form("perf_part", "har", styles=hi)),
+            ("imperativ", form("imp")),
+            ("passiv", form("pass")),
+            ("pres. partisipp", form("pres_part")),
         ]
     elif e.pos == "ADJ":
-        positive = [f[k] for k in ("pos_mf", "pos_n", "pos_def_pl") if k in f]
-        sup = [f[k] for k in ("sup_indef", "sup_def") if k in f]
-        rows = [("positiv", " · ".join(positive)), ("komparativ", f.get("cmp", "")),
-                ("superlativ", " · ".join(sup))]
-    return [f"  {k:<16}{v}" for k, v in rows if v]
+        dot = S(" · ", "dim")
+        positive = [_alts(S, f[k], "bold")[1] for k in ("pos_mf", "pos_n", "pos_def_pl") if f.get(k)]
+        sup = [_alts(S, f[k], "bold")[1] for k in ("sup_indef", "sup_def") if f.get(k)]
+        rows = [("positiv", dot.join(positive)),
+                ("komparativ", _alts(S, f.get("cmp", []), "bold")[1]),
+                ("superlativ", dot.join(sup))]
+    return [f"  {_cell(k, S(k, 'dim'), 16)}{v}" for k, v in rows if v]
 
 
 def _entry_lines(e: ordbok.Entry, tr: dict, args: argparse.Namespace) -> list[str]:
-    pos = POS_LABELS.get(e.pos, e.pos.lower())
+    S: Style = args.style
+    icon, color = POS_STYLE.get(e.pos, ("🔹", "bcyan"))
     if e.pos == "NOUN" and e.genders:
-        pos += ", " + "/".join(GENDERS[g] for g in e.genders)
-    head = f"{' / '.join(e.lemmas)}  ({pos})"
+        color = GENDER_COLORS[e.genders[0]]
+
+    pos_plain = POS_LABELS.get(e.pos, e.pos.lower())
+    pos_styled = S(pos_plain, "dim")
+    if e.pos == "NOUN" and e.genders:
+        pos_plain += ", " + "/".join(GENDERS[g] for g in e.genders)
+        pos_styled += S(", ", "dim") + S("/", "dim").join(S(GENDERS[g], GENDER_COLORS[g]) for g in e.genders)
+    if _is_irregular(e):
+        pos_plain += ", uregelrett" + ("   " if S.emoji else "")
+        pos_styled += S(", ", "dim") + S.icon("⚡") + S("uregelrett", "byellow")
+
+    lemma = " / ".join(e.lemmas)
+    head = f"{S.icon(icon)}{S(lemma, 'bold', color)}  {S('(', 'dim')}{pos_styled}{S(')', 'dim')}"
+    plain_len = len(lemma) + len(pos_plain) + 4 + (3 if S.emoji else 0)
     en = tr.get(_headword_query(e))
     if en:
-        head += f"  ≈ {_clean_mt(en)}"
-    lines = [head] + _forms_lines(e, args.dict)
+        gloss = f"≈ {_clean_mt(en)}"
+        head += "  " + S(gloss, "bold", "green")
+        plain_len += 2 + len(gloss)
+    lines = [head]
+    if S.color:
+        lines.append(S("─" * plain_len, "gray"))
+    lines += _forms_lines(S, e, args.dict)
     if args.brief:
         return lines
     senses = e.senses if args.all else e.senses[: args.max_senses]
     if senses:
         lines.append("")
     for i, s in enumerate(senses, 1):
-        lines += _sense_lines(s, f"{i}.", "  ", tr, args.examples)
+        lines += _sense_lines(S, s, f"{i}.", "  ", tr, args.examples)
     if len(e.senses) > len(senses):
         more = len(e.senses) - len(senses)
-        lines.append(f"  … {more} more meaning{'s' if more > 1 else ''} (use --all)")
+        lines.append(S(f"  … {more} more meaning{'s' if more > 1 else ''} (use --all)", "dim"))
     return lines
 
 
@@ -353,18 +420,18 @@ def cmd_word(args: argparse.Namespace) -> int:
     word = " ".join(args.text).strip()
     if word:
         return _lookup_one(args, word)
-    if not sys.stdin.isatty():
+    if not is_terminal(sys.stdin):
         words = [w.strip() for w in sys.stdin.read().splitlines() if w.strip()]
         rc = 0
         for i, w in enumerate(words):
             if i:
-                print("\n" + "─" * 40 + "\n")
+                print("\n" + args.style("─" * 40, "gray") + "\n")
             rc = max(rc, _lookup_one(args, w))
         return rc
     print(f"{DICT_NAMES[args.dict]} lookup. Ctrl+D / Ctrl+Z+Enter or :q to quit.", file=sys.stderr)
     while True:
         try:
-            w = input("ord> ").strip()
+            w = input(args.style("ord> ", "bold", "bcyan")).strip()
         except (EOFError, KeyboardInterrupt):
             print(file=sys.stderr)
             return 0
@@ -435,6 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="API key if the server requires one (env LT_API_KEY)")
     common.add_argument("--timeout", type=float, default=120.0, help="request timeout in seconds")
     common.add_argument("--json", action="store_true", help="print raw JSON response")
+    common.add_argument("--color", choices=["auto", "always", "never"], default="auto",
+                        help="colors/emoji (default auto: on in a terminal, unless LT_PRETTY=0)")
 
     p = argparse.ArgumentParser(
         prog="lt",
@@ -545,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
 
     server.load_dotenv()
     args = build_parser().parse_args(argv)
+    args.style = make_style(args.color)
     try:
         return args.func(args)
     except LTUnreachable as e:

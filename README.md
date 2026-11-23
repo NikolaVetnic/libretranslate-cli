@@ -43,7 +43,7 @@ Requirements: Python 3.9+ and Docker (Docker Desktop, OrbStack or Colima on macO
 
 To update after a `git pull`, nothing is needed. If `pyproject.toml` changed (for example, new commands such as `ltw`), run `pipx reinstall lt-cli`. To remove the tool, run `pipx uninstall lt-cli`.
 
-> **Git Bash note:** if interactive mode (`ltn` with no arguments) doesn't respond, Git Bash isn't presenting a real terminal to Windows programs. Run `winpty ltn` instead. Text arguments, files and pipes work normally.
+> **Git Bash note:** `lt` recognises Git Bash's terminal (mintty), so colors and interactive mode should work directly. If interactive mode doesn't respond, run it through `winpty`, e.g. `winpty ltn`.
 
 ## On-demand server
 
@@ -136,6 +136,13 @@ ltw write                # English word -> looks up its Norwegian translation
 ltw                      # interactive: type words at the ord> prompt
 ```
 
+**Pretty output:** in a terminal, `ltw` uses colors and emoji:
+- Nouns are color-coded by gender: masculine blue, feminine magenta, neuter green.
+- Irregular verbs are tagged `⚡ uregelrett`, with their irregular past forms highlighted.
+- English translations are green and examples yellow.
+
+Set `LT_PRETTY=0` in `.env` (or pass `--color never`) for plain text, or `LT_EMOJI=0` to keep colors without emoji. When output is piped or redirected, it's always plain text, so `ltw hus > hus.txt` gives a clean file. `NO_COLOR` and `FORCE_COLOR` are also respected.
+
 **Privacy:** `ltw` sends only the looked-up word to the public ordbokene.no API (`ord.uib.no`). All translation is still done locally.
 
 **English glosses** (the `≈ …` after the headword) are machine translations. `ltw` translates each gloss back to Norwegian, and hides it if the result isn't the original word. This filters out wrong guesses for rarer words. Translated definitions and examples are meant as a reading aid. The Norwegian text is the authoritative version.
@@ -147,6 +154,8 @@ ltw                      # interactive: type words at the ord> prompt
 | `LT_URL`                        | `http://localhost:$LT_PORT` | Server the CLI talks to                           |
 | `LT_AUTOSTART`                  | `1`                      | Start the local container when a command needs it    |
 | `LT_IDLE_TIMEOUT`               | `15`                     | Minutes without use before auto-stop (`0` = never)   |
+| `LT_PRETTY`                     | `1`                      | Colors + emoji in the terminal (`0` = plain text)    |
+| `LT_EMOJI`                      | `1`                      | Emoji in pretty output (`0` = colors only)           |
 | `LT_TARGET`                     | `en`                     | Default target language                              |
 | `LT_SOURCE`                     | `auto`                   | Default source language                              |
 | `LT_API_KEY`                    | –                        | API key, if the server requires one                  |
