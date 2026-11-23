@@ -17,6 +17,34 @@ python -m venv .venv
 
 The first start pulls the image (~1 GB) and downloads language models, which takes a few minutes. Models are stored in the `lt-models` Docker volume, so later starts take a few seconds.
 
+## Install globally (any terminal, no venv)
+
+Use [pipx](https://pipx.pypa.io). It installs the tool in its own isolated environment and puts only `lt`, `ltn` and `lte` on your PATH. Install in editable mode (`-e`) so `lt` can find `docker-compose.yml` and `.env` in this folder. Code changes and `git pull` then take effect without reinstalling.
+
+**Windows (Git Bash, PowerShell or cmd)**
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath          # adds %USERPROFILE%\.local\bin to your user PATH
+# open a new terminal, then:
+pipx install -e /c/path/to/libretranslate-cli
+```
+
+**macOS**
+
+```bash
+brew install pipx
+pipx ensurepath                    # adds ~/.local/bin to your PATH
+# open a new terminal, then:
+pipx install -e ~/path/to/libretranslate-cli
+```
+
+Requirements: Python 3.9+ and Docker (Docker Desktop, OrbStack or Colima on macOS). The image runs natively on both Intel and Apple Silicon. After installing, `ltn God morgen` works from any folder.
+
+To update after a `git pull`, nothing is needed. If `pyproject.toml` changed (for example, new commands), run `pipx reinstall lt-cli`. To remove the tool, run `pipx uninstall lt-cli`.
+
+> **Git Bash note:** if interactive mode (`ltn` with no arguments) doesn't respond, Git Bash isn't presenting a real terminal to Windows programs. Run `winpty ltn` instead. Text arguments, files and pipes work normally.
+
 ## On-demand server
 
 The container only runs while you're using it:
